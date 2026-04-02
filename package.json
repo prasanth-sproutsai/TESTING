@@ -1,0 +1,20 @@
+{
+  "name": "login-stability-monitor",
+  "version": "1.0.0",
+  "description": "Continuous login API stability checker for /user/auth",
+  "main": "login-stability-check.js",
+  "scripts": {
+    "start": "node login-stability-check.js"
+  },
+  "keywords": [
+    "api",
+    "stability",
+    "monitoring",
+    "axios"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.11.0",
+    "dotenv": "^16.4.5"
+  }
+}
