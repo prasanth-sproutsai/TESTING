@@ -136,6 +136,16 @@ async function startMonitor() {
   // Trigger immediately once, then continue at the configured interval.
   await tick();
 
+  // Scheduler-friendly mode:
+  // If duration is 0 (or negative), run exactly one attempt and exit.
+  if (config.durationHours <= 0) {
+    log(
+      "INFO",
+      `Monitor completed | total=${total} success=${success} failure=${failure}`
+    );
+    process.exit(0);
+  }
+
   const timer = setInterval(async () => {
     if (Date.now() >= stopAt) {
       clearInterval(timer);

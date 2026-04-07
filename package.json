@@ -4,7 +4,8 @@
   "description": "Continuous login API stability checker for /user/auth",
   "main": "login-stability-check.js",
   "scripts": {
-    "start": "node login-stability-check.js"
+    "start": "node login-stability-check.js",
+    "sanity": "node sanity-job-flow.js"
   },
   "keywords": [
     "api",
