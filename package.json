@@ -1,11 +1,15 @@
-{
+﻿{
   "name": "login-stability-monitor",
   "version": "1.0.0",
-  "description": "Continuous login API stability checker for /user/auth",
+  "description": "API sanity scripts: single-shot login check and job flows",
   "main": "login-stability-check.js",
   "scripts": {
     "start": "node login-stability-check.js",
-    "sanity": "node sanity-job-flow.js"
+    "sanity": "node sanity-job-flow.js",
+    "job:new": "node -e \"delete process.env.JOB_TITLE; require('./sanity-job-flow')\"",
+    "job:details": "node sanity-job-flow.js --job-details",
+    "sanity:print-payload": "node sanity-job-flow.js --print-payload",
+    "sanity:stage2": "node sanity-job-next-stage.js"
   },
   "keywords": [
     "api",
@@ -19,3 +23,4 @@
     "dotenv": "^16.4.5"
   }
 }
+

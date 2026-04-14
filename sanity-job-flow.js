@@ -1,9 +1,24 @@
-const fs = require("fs");
+/**
+ * Orchestrator: Login → Create job → Job details → Generate filter → Source candidates → Match profiles → Outreach → (optional) saved filter.
+ * Each step is implemented in job-stage-*.js; shared helpers in job-flow-common.js.
+ */
+
 const path = require("path");
 const axios = require("axios");
 const dotenv = require("dotenv");
 
 dotenv.config();
+const { buildDynamicSoftwareJobPayload } = require("./job-create-payload");
+const { isoTimestamp, createDualLogger, sleep } = require("./job-flow-common");
+const { login } = require("./job-stage-login");
+const { createJob } = require("./job-stage-create");
+const { getJobDetails, validateJobDetails } = require("./job-stage-get-details");
+const { getAutoSourceFilter } = require("./job-stage-auto-source-filter");
+const { saveAutoSourceFilter } = require("./job-stage-save-auto-source-filter");
+const { triggerSourcing } = require("./job-stage-source-candidates");
+const { getMatchProfiles } = require("./job-stage-get-match-profiles");
+const { runOutreach } = require("./job-stage-outreach");
+const { getSavedAutoSourceFilter } = require("./job-stage-get-saved-auto-source-filter");
 
 // --- configuration (env-driven) ---
 const config = {
@@ -11,21 +26,78 @@ const config = {
   username: process.env.LOGIN_USERNAME,
   password: process.env.PASSWORD,
   timeoutMs: Number(process.env.REQUEST_TIMEOUT_MS || 30_000),
-  // Path segment for job creation (PDF-backed handler expects name, company, location + org_id/uid headers).
   jobCreatePath: (process.env.JOB_CREATE_PATH || "/job/create").replace(/^\/?/, "/"),
-  jobCompany: process.env.JOB_COMPANY || "Sanity Automation Co",
-  jobLocation: process.env.JOB_LOCATION || "Remote",
   logFile: process.env.SANITY_LOG_FILE || "logs.txt",
-  // Some deployments omit org on /user/auth; set explicitly when needed.
+  printPayload: process.env.SANITY_PRINT_PAYLOAD === "1" || process.env.SANITY_PRINT_PAYLOAD === "true",
   orgIdFallback: (process.env.ORG_ID || process.env.SANITY_ORG_ID || "").trim(),
+  requestOrigin: (process.env.JOB_REQUEST_ORIGIN || "https://test.app.sproutsai.com").trim(),
+  requestReferer: (process.env.JOB_REQUEST_REFERER || "https://test.app.sproutsai.com/").trim(),
+  requestUserAgent: (process.env.JOB_REQUEST_USER_AGENT || "").trim(),
+  jobDetailsPath: (process.env.JOB_DETAILS_PATH || "/job/job_details").replace(/\/+$/, ""),
+  jobDetailsQuery: (process.env.JOB_DETAILS_QUERY || "status=active").trim(),
+  autoSourceFilterPath: (process.env.JOB_AUTO_SOURCE_FILTER_PATH || "/job/get_auto_source_filter")
+    .replace(/\/+$/, ""),
+  autoSourceFilterMaxAttempts: Math.max(
+    1,
+    parseInt(process.env.JOB_AUTO_SOURCE_FILTER_MAX_ATTEMPTS || "3", 10) || 3
+  ),
+  autoSourceFilterBackoffMs: Math.max(
+    100,
+    parseInt(process.env.JOB_AUTO_SOURCE_FILTER_BACKOFF_MS || "1000", 10) || 1000
+  ),
+  autoSourceFilterLogFull:
+    process.env.SANITY_LOG_FILTER_FULL === "1" || process.env.SANITY_LOG_FILTER_FULL === "true",
+  saveAutoSourceFilterPath: (process.env.SAVE_AUTO_SOURCE_FILTER_PATH || "/job/save-auto-source-filter")
+    .replace(/\/+$/, ""),
+  sourcingPath: (process.env.SOURCING_PATH || "/automation/pipeline/sourcing").replace(/\/+$/, ""),
+  sourcingCandidateCount: Math.max(1, parseInt(process.env.SOURCING_CANDIDATE_COUNT || "20", 10) || 20),
+  sourcingMaxAttempts: Math.max(1, parseInt(process.env.SOURCING_MAX_ATTEMPTS || "3", 10) || 3),
+  sourcingBackoffMs: Math.max(100, parseInt(process.env.SOURCING_BACKOFF_MS || "1000", 10) || 1000),
+  // Optional idempotency guard within a run.
+  sourcingCooldownMs: Math.max(0, parseInt(process.env.SOURCING_COOLDOWN_MS || "0", 10) || 0),
+  matchProfilesPath: (process.env.MATCH_PROFILES_PATH || "/job/get_match_profiles").replace(/\/+$/, ""),
+  // UI currently uses POST + query for prospect list and returns populated content.
+  matchProfilesMethod: (process.env.MATCH_PROFILES_METHOD || "POST").trim().toUpperCase(),
+  matchProfilesSource: (process.env.MATCH_PROFILES_SOURCE || "Prospect").trim(),
+  matchProfilesThumbsUp: (process.env.MATCH_PROFILES_THUMBS_UP || "0").trim(),
+  matchProfilesLimit: Math.max(1, parseInt(process.env.MATCH_PROFILES_LIMIT || "20", 10) || 20),
+  matchProfilesPage: Math.max(1, parseInt(process.env.MATCH_PROFILES_PAGE || "1", 10) || 1),
+  matchProfilesMaxAttempts: Math.max(1, parseInt(process.env.MATCH_PROFILES_MAX_ATTEMPTS || "3", 10) || 3),
+  matchProfilesBackoffMs: Math.max(100, parseInt(process.env.MATCH_PROFILES_BACKOFF_MS || "1000", 10) || 1000),
+  generatePersonalizedEmailPath: (
+    process.env.GENERATE_PERSONALIZED_EMAIL_PATH || "/email/email-templates/generate-personalized-email"
+  ).replace(/\/+$/, ""),
+  sequenceCreatePath: (process.env.SEQUENCE_CREATE_PATH || "/sequence/job/create").replace(/\/+$/, ""),
+  outreachSubject: (process.env.OUTREACH_SUBJECT || "Exciting opportunity").trim(),
+  outreachBody: (process.env.OUTREACH_BODY || "We found your profile interesting").trim(),
+  sequenceId: (process.env.SEQUENCE_ID || "").trim(),
+  fromEmail: (process.env.FROM_EMAIL || "").trim(),
+  fromEmailAddress: (process.env.FROM_EMAIL_ADDRESS || "").trim(),
+  orgName: (process.env.ORG_NAME || "").trim(),
+  savedAutoSourceFilterPath: (process.env.JOB_SAVED_AUTO_SOURCE_FILTER_PATH || "/job/auto-source-filter")
+    .replace(/\/+$/, ""),
+  savedAutoSourceFilter404Retries: Math.max(
+    0,
+    parseInt(process.env.JOB_SAVED_AUTO_SOURCE_FILTER_404_RETRIES || "3", 10) || 3
+  ),
+  skipSavedAutoSourceFilter:
+    process.env.SANITY_SKIP_SAVED_AUTO_SOURCE_FILTER === "1" ||
+    process.env.SANITY_SKIP_SAVED_AUTO_SOURCE_FILTER === "true",
+  savedAutoSourceFilterPostGenerateDelayMs: Math.max(
+    0,
+    parseInt(process.env.JOB_SAVED_AUTO_SOURCE_FILTER_POST_GENERATE_MS || "5000", 10) || 5000
+  ),
+  savedAutoSourceFilter404DelayMinMs: Math.max(
+    1000,
+    parseInt(process.env.JOB_SAVED_AUTO_SOURCE_FILTER_404_DELAY_MIN_MS || "5000", 10) || 5000
+  ),
+  savedAutoSourceFilter404DelayMaxMs: Math.max(
+    1000,
+    parseInt(process.env.JOB_SAVED_AUTO_SOURCE_FILTER_404_DELAY_MAX_MS || "10000", 10) || 10000
+  ),
 };
 
 const requiredEnv = ["BASE_URL", "LOGIN_USERNAME", "PASSWORD"];
-
-// --- small utilities ---
-function isoTimestamp() {
-  return new Date().toISOString();
-}
 
 function validateEnv() {
   const missing = requiredEnv.filter((key) => !process.env[key]?.trim?.());
@@ -34,254 +106,20 @@ function validateEnv() {
   }
 }
 
-function normalizeBaseUrl(baseUrl) {
-  return baseUrl.replace(/\/+$/, "");
-}
-
-function buildLoginUrl(baseUrl) {
-  const trimmed = normalizeBaseUrl(baseUrl);
-  if (/\/login$/i.test(trimmed)) {
-    return trimmed;
-  }
-  return `${trimmed}/user/auth`;
-}
-
-function buildJobCreateUrl(baseUrl, jobPath) {
-  return `${normalizeBaseUrl(baseUrl)}${jobPath}`;
-}
-
-// Append timestamped lines to logs.txt and mirror to console.
-function createDualLogger(logFilePath) {
-  const dir = path.dirname(logFilePath);
-  if (dir && dir !== "." && !fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-
-  return (level, message) => {
-    const line = `[${isoTimestamp()}] [${level}] ${message}`;
-    console.log(line);
-    fs.appendFileSync(logFilePath, `${line}\n`, "utf8");
-  };
-}
-
-function formatAxiosError(error) {
-  const status = error?.response?.status;
-  const data = error?.response?.data;
-  const msg =
-    (typeof data === "string" && data) ||
-    data?.message ||
-    data?.error ||
-    error?.message ||
-    "Unknown request failure";
-  return status ? `HTTP ${status}: ${msg}` : String(msg);
-}
-
-// Normalize Mongo-style ids (ObjectId object or string).
-function pickId(value) {
-  if (value == null) return null;
-  if (typeof value === "string" || typeof value === "number") {
-    return String(value);
-  }
-  if (typeof value === "object") {
-    if (value._id != null) return String(value._id);
-    if (value.id != null) return String(value.id);
-  }
-  return null;
-}
-
-// Pull auth fields from common API response shapes.
-function extractSession(payload) {
-  let root = payload?.data ?? payload;
-  // Unwrap { code, message, data: { token, user, organization, ... } } (Sprouts-style).
-  if (
-    root &&
-    typeof root === "object" &&
-    root.data &&
-    (root.data.token || root.data.user)
-  ) {
-    root = root.data;
-  }
-
-  const userObj = root.user && typeof root.user === "object" ? root.user : null;
-  const user = userObj ?? root.data?.user ?? root.profile;
-
-  const authToken =
-    root.authToken ||
-    root.token ||
-    root.accessToken ||
-    root.access_token ||
-    root.jwt ||
-    root.Authorization ||
-    root.authorization ||
-    root?.user?.token ||
-    root?.data?.token;
-
-  let userId = null;
-  if (typeof root.user === "string" && root.user.trim()) {
-    userId = root.user.trim();
-  } else if (typeof root.user === "number") {
-    userId = String(root.user);
-  } else {
-    userId =
-      root.uid ??
-      root.userId ??
-      root.user_id ??
-      pickId(user) ??
-      root?.data?.uid ??
-      root?.data?.userId;
-  }
-
-  let orgId =
-    root.orgId ??
-    root.organizationId ??
-    root.org_id ??
-    pickId(root.organization) ??
-    pickId(root.org);
-
-  if (!orgId && user) {
-    const o = user.organization ?? user.org ?? user.orgId ?? user.organizationId;
-    orgId = typeof o === "string" || typeof o === "number" ? String(o) : pickId(o);
-  }
-
-  if (!orgId) {
-    orgId = root?.data?.orgId ?? root?.data?.organizationId;
-  }
-
-  if (!orgId && user) {
-    const first =
-      Array.isArray(user.organizations) && user.organizations.length
-        ? user.organizations[0]
-        : null;
-    orgId = pickId(first);
-  }
-
-  if (!orgId) {
-    orgId =
-      pickId(root.defaultOrganization) ||
-      pickId(root.activeOrganization) ||
-      pickId(user?.defaultOrganization) ||
-      pickId(user?.activeOrganization);
-  }
-
-  if (!orgId && config.orgIdFallback) {
-    orgId = config.orgIdFallback;
-  }
-
-  return { authToken, userId, orgId };
-}
-
-function extractJobId(payload) {
-  let root = payload?.data ?? payload;
-  if (
-    root &&
-    typeof root === "object" &&
-    root.data &&
-    (root.data.job || root.data.newJob)
-  ) {
-    root = root.data;
-  }
-
-  const job = root.job ?? root.newJob ?? root.data?.job;
-
-  const id =
-    job?._id ??
-    job?.id ??
-    root.jobId ??
-    root.id ??
-    root._id;
-
-  return id != null ? String(id) : null;
-}
-
-// --- API steps ---
-async function login(http, log) {
-  const loginUrl = buildLoginUrl(config.baseUrl);
-  log("INFO", `Login | POST ${loginUrl}`);
-
-  try {
-    const response = await http.post(loginUrl, {
-      username: config.username,
-      password: config.password,
-    });
-
-    if (response.status !== 200) {
-      throw new Error(`Unexpected login status ${response.status}`);
-    }
-
-    const session = extractSession(response.data);
-    const missing = [];
-    if (!session.authToken) missing.push("authToken");
-    if (!session.userId) missing.push("userId (uid)");
-    if (!session.orgId) missing.push("orgId");
-
-    if (missing.length) {
-      log("ERROR", `Login response missing: ${missing.join(", ")}`);
-      throw new Error(
-        `Login succeeded but could not parse session fields (${missing.join(
-          ", "
-        )}). For orgId, set ORG_ID (or SANITY_ORG_ID) in .env if your API omits it.`
-      );
-    }
-
-    log("SUCCESS", "Login OK | authToken, userId, orgId extracted");
-    return session;
-  } catch (error) {
-    const detail = error.response ? formatAxiosError(error) : error.message;
-    log("ERROR", `Login failed | ${detail}`);
-    throw error;
-  }
-}
-
-async function createJob(http, log, session) {
-  const jobUrl = buildJobCreateUrl(config.baseUrl, config.jobCreatePath);
-  const jobName = `Automation Job ${isoTimestamp()}`;
-
-  const body = {
-    name: jobName,
-    company: config.jobCompany,
-    location: config.jobLocation,
-  };
-
-  const headers = {
-    Authorization: `Bearer ${session.authToken}`,
-    uid: String(session.userId),
-    org_id: String(session.orgId),
-    "Content-Type": "application/json",
-  };
-
-  log("INFO", `Create job | POST ${jobUrl} | name="${jobName}"`);
-
-  try {
-    const response = await http.post(jobUrl, body, {
-      headers,
-      validateStatus: (status) => status === 200 || status === 201,
-    });
-
-    const jobId = extractJobId(response.data);
-    if (!jobId) {
-      log(
-        "ERROR",
-        "Job create returned 200/201 but jobId could not be parsed from response"
-      );
-      throw new Error(
-        "Job created but jobId not found in response (extend extractJobId())"
-      );
-    }
-
-    log(
-      "SUCCESS",
-      `Job created | jobId=${jobId} | status=${response.status}`
-    );
-    return { jobId, status: response.status, raw: response.data };
-  } catch (error) {
-    const detail = error.response ? formatAxiosError(error) : error.message;
-    log("ERROR", `Job creation failed | ${detail}`);
-    throw error;
-  }
-}
-
-// --- orchestration ---
 async function main() {
+  if (process.argv.includes("--print-payload")) {
+    console.log(JSON.stringify(buildDynamicSoftwareJobPayload(), null, 2));
+    process.exit(0);
+    return;
+  }
+
+  // Optional: only login + GET job details + validate (no create). Usage: --job-details <jobId>
+  const detailsFlagIdx = process.argv.indexOf("--job-details");
+  const jobIdFromEnv = (process.env.JOB_DETAILS_JOB_ID || "").trim();
+  const jobIdArgAfterFlag =
+    detailsFlagIdx >= 0 ? String(process.argv[detailsFlagIdx + 1] || "").trim() : "";
+  const jobIdForDetailsOnly = jobIdArgAfterFlag || jobIdFromEnv;
+
   try {
     validateEnv();
   } catch (err) {
@@ -293,17 +131,97 @@ async function main() {
   const logPath = path.resolve(process.cwd(), config.logFile);
   const log = createDualLogger(logPath);
 
-  log("INFO", `Sanity flow started | logFile=${logPath}`);
+  const modeLabel =
+    detailsFlagIdx >= 0
+      ? "Details + generate filter + source + match profiles + outreach (+ optional saved filter)"
+      : "Full sanity (create + details + generate filter + source + match profiles + outreach + optional saved filter)";
+  log("INFO", `Sanity flow started | ${modeLabel} | logFile=${logPath}`);
 
   const http = axios.create({
     timeout: config.timeoutMs,
   });
 
   try {
-    const session = await login(http, log);
-    await createJob(http, log, session);
+    const session = await login(http, log, config);
+
+    if (detailsFlagIdx >= 0) {
+      if (!jobIdForDetailsOnly) {
+        log(
+          "ERROR",
+          "Missing job id: pass --job-details <jobId> or set JOB_DETAILS_JOB_ID for the id"
+        );
+        console.log("\nRESULT: FAILED (no job id)\n");
+        process.exitCode = 1;
+        return;
+      }
+      const { job } = await getJobDetails(http, log, session, jobIdForDetailsOnly, config);
+      const validationErrors = validateJobDetails(job, jobIdForDetailsOnly);
+      if (validationErrors.length) {
+        log("ERROR", `Job validation failed | ${validationErrors.join("; ")}`);
+        console.log("\nRESULT: FAILED\n");
+        process.exitCode = 1;
+        return;
+      }
+      log("SUCCESS", "Job validation successful");
+      const stage4 = await getAutoSourceFilter(http, log, session, jobIdForDetailsOnly, config);
+      await saveAutoSourceFilter(http, log, session, jobIdForDetailsOnly, stage4.filter, config);
+      await triggerSourcing(http, log, session, jobIdForDetailsOnly, config);
+      const stage7 = await getMatchProfiles(http, log, session, jobIdForDetailsOnly, config);
+      await runOutreach(http, log, session, stage7, job, config);
+      if (!config.skipSavedAutoSourceFilter) {
+        if (config.savedAutoSourceFilterPostGenerateDelayMs > 0) {
+          log(
+            "INFO",
+            `Waiting ${config.savedAutoSourceFilterPostGenerateDelayMs}ms before GET saved auto-source filter`
+          );
+          await sleep(config.savedAutoSourceFilterPostGenerateDelayMs);
+        }
+        await getSavedAutoSourceFilter(http, log, session, jobIdForDetailsOnly, config);
+      } else {
+        log(
+          "WARN",
+          "Skipping Stage 5 GET saved auto-source filter (SANITY_SKIP_SAVED_AUTO_SOURCE_FILTER)"
+        );
+      }
+      console.log("\nRESULT: SUCCESS\n");
+      log("INFO", "Get job details + auto-source filter stages completed successfully");
+      return;
+    }
+
+    const created = await createJob(http, log, session, config);
+    const { job } = await getJobDetails(http, log, session, created.jobId, config);
+    const validationErrors = validateJobDetails(job, created.jobId);
+    if (validationErrors.length) {
+      log("ERROR", `Job validation failed | ${validationErrors.join("; ")}`);
+      console.log("\nRESULT: FAILED\n");
+      process.exitCode = 1;
+      return;
+    }
+    log("SUCCESS", "Job validation successful");
+    const stage4 = await getAutoSourceFilter(http, log, session, created.jobId, config);
+    await saveAutoSourceFilter(http, log, session, created.jobId, stage4.filter, config);
+    await triggerSourcing(http, log, session, created.jobId, config);
+    const stage7 = await getMatchProfiles(http, log, session, created.jobId, config);
+    await runOutreach(http, log, session, stage7, job, config);
+    if (!config.skipSavedAutoSourceFilter) {
+      if (config.savedAutoSourceFilterPostGenerateDelayMs > 0) {
+        log(
+          "INFO",
+          `Waiting ${config.savedAutoSourceFilterPostGenerateDelayMs}ms before GET saved auto-source filter`
+        );
+        await sleep(config.savedAutoSourceFilterPostGenerateDelayMs);
+      }
+      await getSavedAutoSourceFilter(http, log, session, created.jobId, config);
+    } else {
+      log(
+        "WARN",
+        "Skipping Stage 5 GET saved auto-source filter (SANITY_SKIP_SAVED_AUTO_SOURCE_FILTER)"
+      );
+    }
+    console.log("\nRESULT: SUCCESS\n");
     log("INFO", "Sanity flow completed successfully");
   } catch {
+    console.log("\nRESULT: FAILED\n");
     process.exitCode = 1;
   }
 }

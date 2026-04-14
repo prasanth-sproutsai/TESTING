@@ -2,11 +2,8 @@ param(
   [string]$RepoPath = "c:\Users\prasa\SOFTWARE_TESTING\TESTING"
 )
 
-# Ensure we run from the repo root so `dotenv.config()` loads the correct `.env`.
+# Run from repo root so dotenv loads .env from the correct folder.
 Set-Location $RepoPath
 
-# Run exactly one login attempt (the JS script exits immediately when this is <= 0).
-$env:DURATION_HOURS = "0"
-
+# Script performs a single login POST and exits (no env flags required).
 node login-stability-check.js
-
