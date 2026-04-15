@@ -74,6 +74,9 @@ const config = {
   fromEmail: (process.env.FROM_EMAIL || "").trim(),
   fromEmailAddress: (process.env.FROM_EMAIL_ADDRESS || "").trim(),
   orgName: (process.env.ORG_NAME || "").trim(),
+  // Safety default: outreach is disabled unless explicitly enabled.
+  outreachEnabled:
+    process.env.OUTREACH_ENABLED === "1" || process.env.OUTREACH_ENABLED === "true",
   savedAutoSourceFilterPath: (process.env.JOB_SAVED_AUTO_SOURCE_FILTER_PATH || "/job/auto-source-filter")
     .replace(/\/+$/, ""),
   // Ensure saved filter has non-empty skills before triggering sourcing.
@@ -196,7 +199,11 @@ async function main() {
       }
       await triggerSourcing(http, log, session, jobIdForDetailsOnly, config);
       const stage7 = await getMatchProfiles(http, log, session, jobIdForDetailsOnly, config);
-      await runOutreach(http, log, session, stage7, job, config);
+      if (config.outreachEnabled) {
+        await runOutreach(http, log, session, stage7, job, config);
+      } else {
+        log("WARN", "Outreach disabled (OUTREACH_ENABLED is not true); skipping Stage 08");
+      }
       if (savedFilterForRun) log("INFO", "Saved filter already validated before sourcing trigger");
       console.log("\nRESULT: SUCCESS\n");
       log("INFO", "Get job details + auto-source filter stages completed successfully");
@@ -233,7 +240,11 @@ async function main() {
     }
     await triggerSourcing(http, log, session, created.jobId, config);
     const stage7 = await getMatchProfiles(http, log, session, created.jobId, config);
-    await runOutreach(http, log, session, stage7, job, config);
+    if (config.outreachEnabled) {
+      await runOutreach(http, log, session, stage7, job, config);
+    } else {
+      log("WARN", "Outreach disabled (OUTREACH_ENABLED is not true); skipping Stage 08");
+    }
     if (savedFilterForRun) log("INFO", "Saved filter already validated before sourcing trigger");
     console.log("\nRESULT: SUCCESS\n");
     log("INFO", "Sanity flow completed successfully");
