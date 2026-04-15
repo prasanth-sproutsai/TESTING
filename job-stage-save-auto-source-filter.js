@@ -20,6 +20,24 @@ function extractSavedFilter(payload) {
   return root;
 }
 
+function normalizeSkillsForSourcing(skills) {
+  if (!Array.isArray(skills)) return [];
+  // Keep object entries as-is; convert plain strings into sourcing-compatible objects.
+  return skills
+    .map((s) => {
+      if (s && typeof s === "object" && String(s.skill || "").trim()) {
+        return {
+          skill: String(s.skill).trim(),
+          preference_type: String(s.preference_type || "nice_to_have"),
+        };
+      }
+      const label = String(s || "").trim();
+      if (!label) return null;
+      return { skill: label, preference_type: "nice_to_have" };
+    })
+    .filter(Boolean);
+}
+
 async function saveAutoSourceFilter(http, log, session, jobId, generatedFilter, cfg) {
   const url = buildSaveAutoSourceFilterUrl(cfg.baseUrl, cfg.saveAutoSourceFilterPath);
   const headers = {
@@ -29,13 +47,28 @@ async function saveAutoSourceFilter(http, log, session, jobId, generatedFilter, 
     "Content-Type": "application/json",
   };
 
-  // Persist exactly what Stage 4 generated, forcing the current job_id for safety.
+  const normalizedSkills = normalizeSkillsForSourcing(generatedFilter?.skills);
+  // Persist generated filter with sourcing-friendly defaults, forcing the current job_id for safety.
   const payload = {
     ...(generatedFilter && typeof generatedFilter === "object" ? generatedFilter : {}),
     job_id: String(jobId),
+    skills: normalizedSkills,
+    title_search_depth:
+      generatedFilter?.title_search_depth && String(generatedFilter.title_search_depth).trim()
+        ? generatedFilter.title_search_depth
+        : "current_only",
+    similar_companies_search_depth:
+      generatedFilter?.similar_companies_search_depth &&
+      String(generatedFilter.similar_companies_search_depth).trim()
+        ? generatedFilter.similar_companies_search_depth
+        : "current_only",
+    prospect_count: Number(generatedFilter?.prospect_count || cfg?.sourcingCandidateCount || 20),
   };
 
-  log("INFO", `Save auto-source filter | POST ${url} | job_id=${jobId}`);
+  log(
+    "INFO",
+    `Save auto-source filter | POST ${url} | job_id=${jobId} | normalizedSkills=${normalizedSkills.length}`
+  );
 
   const response = await http.post(url, payload, {
     headers,

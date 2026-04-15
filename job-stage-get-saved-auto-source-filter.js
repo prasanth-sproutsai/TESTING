@@ -68,9 +68,22 @@ function validateSavedAutoSourceFilter(filter, expectedJobId) {
   return errors;
 }
 
+function hasNonEmptySkills(filter) {
+  return (
+    Array.isArray(filter?.skills) &&
+    filter.skills.some((s) => {
+      if (s && typeof s === "object") {
+        return String(s.skill || s.label || "").trim() !== "";
+      }
+      return String(s || "").trim() !== "";
+    })
+  );
+}
+
 /**
  * GET /job/auto-source-filter/:jobId
- * Retries on 404 only (eventual consistency after Stage 04), 5–10s delay, up to 3 retries after first attempt.
+ * Retries on 404 and not-ready payloads (e.g. empty skills during eventual consistency),
+ * 5–10s delay, up to 3 retries after first attempt.
  * Does not retry 401.
  */
 async function getSavedAutoSourceFilter(http, log, session, jobId, cfg) {
@@ -91,6 +104,10 @@ async function getSavedAutoSourceFilter(http, log, session, jobId, cfg) {
     delayMinMs,
     parseInt(cfg.savedAutoSourceFilter404DelayMaxMs ?? "10000", 10) || 10000
   );
+  const requireSkillsReady =
+    cfg.savedAutoSourceFilterRequireSkillsReady !== false &&
+    cfg.savedAutoSourceFilterRequireSkillsReady !== "0" &&
+    cfg.savedAutoSourceFilterRequireSkillsReady !== "false";
   const maxTries = 1 + max404Retries;
 
   const headers = browserLikeGetHeaders(session, cfg);
@@ -136,6 +153,17 @@ async function getSavedAutoSourceFilter(http, log, session, jobId, cfg) {
     if (validationErrors.length) {
       log("ERROR", `Saved auto-source filter validation failed | ${validationErrors.join("; ")}`);
       throw noRetryError(validationErrors.join("; "));
+    }
+
+    if (requireSkillsReady && !hasNonEmptySkills(filter)) {
+      log("WARN", "Saved auto-source filter is not ready yet (skills empty)");
+      if (attempt < maxTries) {
+        const delayMs = randomInt(delayMinMs, delayMaxMs);
+        log("INFO", `Saved auto-source filter readiness retry after ${delayMs}ms`);
+        await sleep(delayMs);
+        continue;
+      }
+      throw new Error("Saved auto-source filter skills still empty after retries");
     }
 
     log("INFO", `Saved auto-source filter full response | ${JSON.stringify(filter)}`);

@@ -76,6 +76,13 @@ const config = {
   orgName: (process.env.ORG_NAME || "").trim(),
   savedAutoSourceFilterPath: (process.env.JOB_SAVED_AUTO_SOURCE_FILTER_PATH || "/job/auto-source-filter")
     .replace(/\/+$/, ""),
+  // Ensure saved filter has non-empty skills before triggering sourcing.
+  savedAutoSourceFilterRequireSkillsReady:
+    process.env.JOB_SAVED_AUTO_SOURCE_FILTER_REQUIRE_SKILLS_READY == null
+      ? true
+      : !["0", "false"].includes(
+          String(process.env.JOB_SAVED_AUTO_SOURCE_FILTER_REQUIRE_SKILLS_READY).toLowerCase()
+        ),
   savedAutoSourceFilter404Retries: Math.max(
     0,
     parseInt(process.env.JOB_SAVED_AUTO_SOURCE_FILTER_404_RETRIES || "3", 10) || 3
@@ -165,9 +172,7 @@ async function main() {
       log("SUCCESS", "Job validation successful");
       const stage4 = await getAutoSourceFilter(http, log, session, jobIdForDetailsOnly, config);
       await saveAutoSourceFilter(http, log, session, jobIdForDetailsOnly, stage4.filter, config);
-      await triggerSourcing(http, log, session, jobIdForDetailsOnly, config);
-      const stage7 = await getMatchProfiles(http, log, session, jobIdForDetailsOnly, config);
-      await runOutreach(http, log, session, stage7, job, config);
+      let savedFilterForRun = null;
       if (!config.skipSavedAutoSourceFilter) {
         if (config.savedAutoSourceFilterPostGenerateDelayMs > 0) {
           log(
@@ -176,13 +181,23 @@ async function main() {
           );
           await sleep(config.savedAutoSourceFilterPostGenerateDelayMs);
         }
-        await getSavedAutoSourceFilter(http, log, session, jobIdForDetailsOnly, config);
+        savedFilterForRun = await getSavedAutoSourceFilter(
+          http,
+          log,
+          session,
+          jobIdForDetailsOnly,
+          config
+        );
       } else {
         log(
           "WARN",
           "Skipping Stage 5 GET saved auto-source filter (SANITY_SKIP_SAVED_AUTO_SOURCE_FILTER)"
         );
       }
+      await triggerSourcing(http, log, session, jobIdForDetailsOnly, config);
+      const stage7 = await getMatchProfiles(http, log, session, jobIdForDetailsOnly, config);
+      await runOutreach(http, log, session, stage7, job, config);
+      if (savedFilterForRun) log("INFO", "Saved filter already validated before sourcing trigger");
       console.log("\nRESULT: SUCCESS\n");
       log("INFO", "Get job details + auto-source filter stages completed successfully");
       return;
@@ -200,9 +215,7 @@ async function main() {
     log("SUCCESS", "Job validation successful");
     const stage4 = await getAutoSourceFilter(http, log, session, created.jobId, config);
     await saveAutoSourceFilter(http, log, session, created.jobId, stage4.filter, config);
-    await triggerSourcing(http, log, session, created.jobId, config);
-    const stage7 = await getMatchProfiles(http, log, session, created.jobId, config);
-    await runOutreach(http, log, session, stage7, job, config);
+    let savedFilterForRun = null;
     if (!config.skipSavedAutoSourceFilter) {
       if (config.savedAutoSourceFilterPostGenerateDelayMs > 0) {
         log(
@@ -211,13 +224,17 @@ async function main() {
         );
         await sleep(config.savedAutoSourceFilterPostGenerateDelayMs);
       }
-      await getSavedAutoSourceFilter(http, log, session, created.jobId, config);
+      savedFilterForRun = await getSavedAutoSourceFilter(http, log, session, created.jobId, config);
     } else {
       log(
         "WARN",
         "Skipping Stage 5 GET saved auto-source filter (SANITY_SKIP_SAVED_AUTO_SOURCE_FILTER)"
       );
     }
+    await triggerSourcing(http, log, session, created.jobId, config);
+    const stage7 = await getMatchProfiles(http, log, session, created.jobId, config);
+    await runOutreach(http, log, session, stage7, job, config);
+    if (savedFilterForRun) log("INFO", "Saved filter already validated before sourcing trigger");
     console.log("\nRESULT: SUCCESS\n");
     log("INFO", "Sanity flow completed successfully");
   } catch {
