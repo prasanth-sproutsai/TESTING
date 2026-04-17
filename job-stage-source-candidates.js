@@ -1,12 +1,13 @@
 /**
- * Stage 6: trigger sourcing pipeline for a job.
+ * Stage 6: trigger sourcing for a job (POST job/sourceCandidates by default).
+ * Legacy path was /automation/pipeline/sourcing; set SOURCING_PATH to override.
  */
 
 const { normalizeBaseUrl, formatAxiosError, sleep, browserLikeGetHeaders } = require("./job-flow-common");
 
 function buildSourcingUrl(baseUrl, pathPrefix) {
   const base = normalizeBaseUrl(baseUrl);
-  const p = String(pathPrefix || "/automation/pipeline/sourcing")
+  const p = String(pathPrefix || "/job/sourceCandidates")
     .replace(/^\/?/, "/")
     .replace(/\/+$/, "");
   return `${base}${p}`;
@@ -44,11 +45,15 @@ function validateSourcingResponse(data, expectedJobId) {
 }
 
 /**
- * POST /automation/pipeline/sourcing
+ * POST {BASE_URL}{sourcingPath} (default /job/sourceCandidates, same host as BASE_URL).
  * Retry only on 5xx / transient network failures.
  */
 async function triggerSourcing(http, log, session, jobId, cfg) {
-  const url = buildSourcingUrl(cfg.baseUrl, cfg.sourcingPath);
+  // Allow paths like /job/sourceCandidates/{jobId} when SOURCING_PATH contains {jobId}.
+  const pathResolved = String(cfg.sourcingPath || "")
+    .replace(/\{jobId\}/g, String(jobId).trim())
+    .replace(/\{JOB_ID\}/g, String(jobId).trim());
+  const url = buildSourcingUrl(cfg.baseUrl, pathResolved || undefined);
   const maxAttempts = Math.max(1, Number(cfg.sourcingMaxAttempts || 3));
   const baseDelayMs = Math.max(100, Number(cfg.sourcingBackoffMs || 1000));
   const candidateCount = Math.max(1, Number(cfg.sourcingCandidateCount || 20));

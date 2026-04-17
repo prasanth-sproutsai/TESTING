@@ -49,7 +49,8 @@ const config = {
     process.env.SANITY_LOG_FILTER_FULL === "1" || process.env.SANITY_LOG_FILTER_FULL === "true",
   saveAutoSourceFilterPath: (process.env.SAVE_AUTO_SOURCE_FILTER_PATH || "/job/save-auto-source-filter")
     .replace(/\/+$/, ""),
-  sourcingPath: (process.env.SOURCING_PATH || "/automation/pipeline/sourcing").replace(/\/+$/, ""),
+  // Default matches job sourcing API (see team: /job/sourceCandidates); override with SOURCING_PATH if needed.
+  sourcingPath: (process.env.SOURCING_PATH || "/job/sourceCandidates").replace(/\/+$/, ""),
   sourcingCandidateCount: Math.max(1, parseInt(process.env.SOURCING_CANDIDATE_COUNT || "20", 10) || 20),
   sourcingMaxAttempts: Math.max(1, parseInt(process.env.SOURCING_MAX_ATTEMPTS || "3", 10) || 3),
   sourcingBackoffMs: Math.max(100, parseInt(process.env.SOURCING_BACKOFF_MS || "1000", 10) || 1000),
