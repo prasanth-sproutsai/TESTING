@@ -4,6 +4,16 @@
 
 const { normalizeBaseUrl, formatAxiosError, browserLikeGetHeaders } = require("./job-flow-common");
 
+/**
+ * Real outreach hits generate-personalized-email and sequence/job/create (can email candidates).
+ * Default is OFF so automation never sends unless OUTREACH_ALLOW_REAL_SEND=1 is set in env/cfg.
+ */
+function isOutreachRealSendAllowed(cfg) {
+  if (cfg?.outreachAllowRealSend === true || cfg?.outreachAllowRealSend === 1) return true;
+  const s = String(cfg?.outreachAllowRealSend ?? "").trim().toLowerCase();
+  return s === "1" || s === "true";
+}
+
 function buildUrl(baseUrl, routePath, fallbackPath) {
   const base = normalizeBaseUrl(baseUrl);
   const p = String(routePath || fallbackPath)
@@ -199,6 +209,15 @@ async function sendSequence(http, log, session, outreachCtx, cfg) {
  * Stage 08 orchestration using runtime data from Stage 07 only.
  */
 async function runOutreach(http, log, session, stage7Result, job, cfg) {
+  // Hard stop: no template generation and no sequence API unless explicitly allowed.
+  if (!isOutreachRealSendAllowed(cfg)) {
+    log(
+      "WARN",
+      "Outreach send DISABLED | set OUTREACH_ALLOW_REAL_SEND=1 only when you intend real candidate emails (isolated env)."
+    );
+    return { skipped: true, reason: "outreach_send_disabled", candidates: [] };
+  }
+
   const jobId = String(stage7Result?.profilesByJob?.[0]?.job_id || "").trim();
   const candidates = flattenCandidatesFromProfilesByJob(stage7Result?.profilesByJob || []);
 
@@ -242,6 +261,7 @@ async function runOutreach(http, log, session, stage7Result, job, cfg) {
 }
 
 module.exports = {
+  isOutreachRealSendAllowed,
   generateEmailContent,
   sendSequence,
   runOutreach,

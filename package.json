@@ -9,7 +9,8 @@
     "job:new": "node -e \"delete process.env.JOB_TITLE; require('./sanity-job-flow')\"",
     "job:details": "node sanity-job-flow.js --job-details",
     "sanity:print-payload": "node sanity-job-flow.js --print-payload",
-    "sanity:stage2": "node sanity-job-next-stage.js"
+    "sanity:stage2": "node sanity-job-next-stage.js",
+    "outreach:test": "node outreach-test-flow.js"
   },
   "keywords": [
     "api",

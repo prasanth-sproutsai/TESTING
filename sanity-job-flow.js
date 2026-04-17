@@ -74,9 +74,11 @@ const config = {
   fromEmail: (process.env.FROM_EMAIL || "").trim(),
   fromEmailAddress: (process.env.FROM_EMAIL_ADDRESS || "").trim(),
   orgName: (process.env.ORG_NAME || "").trim(),
-  // Safety default: outreach is disabled unless explicitly enabled.
+  // Stage 08 only runs when enabled; real sends also require OUTREACH_ALLOW_REAL_SEND (see job-stage-outreach.js).
   outreachEnabled:
     process.env.OUTREACH_ENABLED === "1" || process.env.OUTREACH_ENABLED === "true",
+  outreachAllowRealSend:
+    process.env.OUTREACH_ALLOW_REAL_SEND === "1" || process.env.OUTREACH_ALLOW_REAL_SEND === "true",
   savedAutoSourceFilterPath: (process.env.JOB_SAVED_AUTO_SOURCE_FILTER_PATH || "/job/auto-source-filter")
     .replace(/\/+$/, ""),
   // Ensure saved filter has non-empty skills before triggering sourcing.
@@ -200,9 +202,18 @@ async function main() {
       await triggerSourcing(http, log, session, jobIdForDetailsOnly, config);
       const stage7 = await getMatchProfiles(http, log, session, jobIdForDetailsOnly, config);
       if (config.outreachEnabled) {
+        if (!config.outreachAllowRealSend) {
+          log(
+            "WARN",
+            "OUTREACH_ALLOW_REAL_SEND is not true; Stage 08 will not call outreach send APIs (no candidate emails)."
+          );
+        }
         await runOutreach(http, log, session, stage7, job, config);
       } else {
-        log("WARN", "Outreach disabled (OUTREACH_ENABLED is not true); skipping Stage 08");
+        log(
+          "WARN",
+          "Outreach disabled (OUTREACH_ENABLED is not true); skipping Stage 08 | real sends also need OUTREACH_ALLOW_REAL_SEND=1"
+        );
       }
       if (savedFilterForRun) log("INFO", "Saved filter already validated before sourcing trigger");
       console.log("\nRESULT: SUCCESS\n");
@@ -241,9 +252,18 @@ async function main() {
     await triggerSourcing(http, log, session, created.jobId, config);
     const stage7 = await getMatchProfiles(http, log, session, created.jobId, config);
     if (config.outreachEnabled) {
+      if (!config.outreachAllowRealSend) {
+        log(
+          "WARN",
+          "OUTREACH_ALLOW_REAL_SEND is not true; Stage 08 will not call outreach send APIs (no candidate emails)."
+        );
+      }
       await runOutreach(http, log, session, stage7, job, config);
     } else {
-      log("WARN", "Outreach disabled (OUTREACH_ENABLED is not true); skipping Stage 08");
+      log(
+        "WARN",
+        "Outreach disabled (OUTREACH_ENABLED is not true); skipping Stage 08 | real sends also need OUTREACH_ALLOW_REAL_SEND=1"
+      );
     }
     if (savedFilterForRun) log("INFO", "Saved filter already validated before sourcing trigger");
     console.log("\nRESULT: SUCCESS\n");
