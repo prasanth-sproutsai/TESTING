@@ -4,6 +4,7 @@
  */
 
 const path = require("path");
+const fs = require("fs");
 const axios = require("axios");
 const dotenv = require("dotenv");
 
@@ -57,10 +58,15 @@ const config = {
   // Optional idempotency guard within a run.
   sourcingCooldownMs: Math.max(0, parseInt(process.env.SOURCING_COOLDOWN_MS || "0", 10) || 0),
   matchProfilesPath: (process.env.MATCH_PROFILES_PATH || "/job/get_match_profiles").replace(/\/+$/, ""),
-  // UI currently uses POST + query for prospect list and returns populated content.
+  // Supported audiences:
+  // - prospects  => ?thumbsUp=0&source=Prospect&limit=20&page=1
+  // - candidates => ?limit=20&filter=Active&page=1
+  matchProfilesAudience: (process.env.MATCH_PROFILES_AUDIENCE || "prospects").trim().toLowerCase(),
+  // UI currently uses POST + query for list retrieval.
   matchProfilesMethod: (process.env.MATCH_PROFILES_METHOD || "POST").trim().toUpperCase(),
   matchProfilesSource: (process.env.MATCH_PROFILES_SOURCE || "Prospect").trim(),
   matchProfilesThumbsUp: (process.env.MATCH_PROFILES_THUMBS_UP || "0").trim(),
+  matchProfilesFilter: (process.env.MATCH_PROFILES_FILTER || "Active").trim(),
   matchProfilesLimit: Math.max(1, parseInt(process.env.MATCH_PROFILES_LIMIT || "20", 10) || 20),
   matchProfilesPage: Math.max(1, parseInt(process.env.MATCH_PROFILES_PAGE || "1", 10) || 1),
   matchProfilesMaxAttempts: Math.max(1, parseInt(process.env.MATCH_PROFILES_MAX_ATTEMPTS || "3", 10) || 3),
@@ -108,6 +114,7 @@ const config = {
     1000,
     parseInt(process.env.JOB_SAVED_AUTO_SOURCE_FILTER_404_DELAY_MAX_MS || "10000", 10) || 10000
   ),
+  testcaseSheetPath: (process.env.SANITY_TESTCASE_SHEET || "JOB_NEW_P0_TEST_TRACKER.csv").trim(),
 };
 
 const requiredEnv = ["BASE_URL", "LOGIN_USERNAME", "PASSWORD"];
@@ -117,6 +124,95 @@ function validateEnv() {
   if (missing.length) {
     throw new Error(`Missing required environment variable(s): ${missing.join(", ")}`);
   }
+}
+
+// Parse TSV/CSV testcase sheet and load rows with testcase IDs.
+function loadTestcases(log, cfg) {
+  const sheetPath = path.resolve(process.cwd(), cfg.testcaseSheetPath);
+  if (!fs.existsSync(sheetPath)) {
+    log("WARN", `Testcase sheet not found; skipping testcase tracker | path=${sheetPath}`);
+    return { sheetPath, rows: [] };
+  }
+
+  const raw = fs.readFileSync(sheetPath, "utf8");
+  const lines = raw.split(/\r?\n/).filter((line) => line.trim() !== "");
+  if (lines.length <= 1) {
+    log("WARN", `Testcase sheet has no data rows; skipping testcase tracker | path=${sheetPath}`);
+    return { sheetPath, rows: [] };
+  }
+
+  const rows = [];
+  for (let i = 1; i < lines.length; i += 1) {
+    const cols = lines[i].split("\t");
+    const tcId = String(cols[0] || "").trim();
+    const tcTitle = String(cols[1] || "").trim();
+    if (!tcId || !/^TC-/.test(tcId)) continue;
+    rows.push({ tcId, tcTitle, row: i + 1 });
+  }
+
+  log("INFO", `Loaded testcase sheet | path=${sheetPath} | testcaseCount=${rows.length}`);
+  return { sheetPath, rows };
+}
+
+// Build in-memory tracker for testcase results and final summary.
+function createTestcaseTracker(log, testcaseRows) {
+  const resultById = new Map();
+  testcaseRows.forEach((tc) => {
+    resultById.set(tc.tcId, { status: "NOT_RUN", detail: "", tc });
+  });
+
+  const stagePrefixes = {
+    LOGIN: "TC-LOGIN-",
+    CREATEJOB: "TC-CREATEJOB-",
+    GETJOB: "TC-GETJOB-",
+    GENAUTOSOURCE: "TC-GENAUTOSOURCE-",
+    GETSOURCEFILTER: "TC-GETSOURCEFILTER-",
+  };
+
+  function markByStage(stageKey, passed, detail) {
+    const prefix = stagePrefixes[stageKey];
+    if (!prefix) return;
+    for (const [tcId, current] of resultById.entries()) {
+      if (!tcId.startsWith(prefix)) continue;
+      resultById.set(tcId, {
+        ...current,
+        status: passed ? "PASS" : "FAIL",
+        detail: detail || "",
+      });
+    }
+    log(
+      passed ? "SUCCESS" : "ERROR",
+      `Testcases mapped for ${stageKey} marked ${passed ? "PASS" : "FAIL"}`
+    );
+  }
+
+  function summarize() {
+    const totals = { PASS: 0, FAIL: 0, NOT_RUN: 0 };
+    const failedIds = [];
+    for (const item of resultById.values()) {
+      totals[item.status] = (totals[item.status] || 0) + 1;
+      if (item.status === "FAIL") {
+        failedIds.push(item.tc.tcId);
+      }
+    }
+    log(
+      "INFO",
+      `Testcase summary | total=${resultById.size} | passed=${totals.PASS} | failed=${totals.FAIL} | not_run=${totals.NOT_RUN}`
+    );
+    if (failedIds.length > 0) {
+      console.log(
+        `\nTESTCASE RESULT: total=${resultById.size}, passed=${totals.PASS}, failed=${totals.FAIL}, not_run=${totals.NOT_RUN}\nFAILED TESTCASE IDs: ${failedIds.join(
+          ", "
+        )}\n`
+      );
+      return;
+    }
+    console.log(
+      `\nTESTCASE RESULT: total=${resultById.size}, passed=${totals.PASS}, failed=${totals.FAIL}, not_run=${totals.NOT_RUN}\n`
+    );
+  }
+
+  return { markByStage, summarize };
 }
 
 async function main() {
@@ -143,6 +239,8 @@ async function main() {
 
   const logPath = path.resolve(process.cwd(), config.logFile);
   const log = createDualLogger(logPath);
+  const testcaseSheet = loadTestcases(log, config);
+  const tracker = createTestcaseTracker(log, testcaseSheet.rows);
 
   const modeLabel =
     detailsFlagIdx >= 0
@@ -156,9 +254,13 @@ async function main() {
 
   try {
     const session = await login(http, log, config);
+    tracker.markByStage("LOGIN", true, "Login stage completed successfully");
 
     if (detailsFlagIdx >= 0) {
       if (!jobIdForDetailsOnly) {
+        tracker.markByStage("GETJOB", false, "Missing job id for details-only mode");
+        tracker.markByStage("GENAUTOSOURCE", false, "Blocked because details-only job id is missing");
+        tracker.markByStage("GETSOURCEFILTER", false, "Blocked because details-only job id is missing");
         log(
           "ERROR",
           "Missing job id: pass --job-details <jobId> or set JOB_DETAILS_JOB_ID for the id"
@@ -170,14 +272,19 @@ async function main() {
       const { job } = await getJobDetails(http, log, session, jobIdForDetailsOnly, config);
       const validationErrors = validateJobDetails(job, jobIdForDetailsOnly);
       if (validationErrors.length) {
+        tracker.markByStage("GETJOB", false, validationErrors.join("; "));
+        tracker.markByStage("GENAUTOSOURCE", false, "Blocked because job validation failed");
+        tracker.markByStage("GETSOURCEFILTER", false, "Blocked because job validation failed");
         log("ERROR", `Job validation failed | ${validationErrors.join("; ")}`);
         console.log("\nRESULT: FAILED\n");
         process.exitCode = 1;
         return;
       }
       log("SUCCESS", "Job validation successful");
+      tracker.markByStage("GETJOB", true, "Job details and validation succeeded");
       const stage4 = await getAutoSourceFilter(http, log, session, jobIdForDetailsOnly, config);
       await saveAutoSourceFilter(http, log, session, jobIdForDetailsOnly, stage4.filter, config);
+      tracker.markByStage("GENAUTOSOURCE", true, "Generated and saved auto-source filter");
       let savedFilterForRun = null;
       if (!config.skipSavedAutoSourceFilter) {
         if (config.savedAutoSourceFilterPostGenerateDelayMs > 0) {
@@ -194,13 +301,27 @@ async function main() {
           jobIdForDetailsOnly,
           config
         );
+        tracker.markByStage("GETSOURCEFILTER", true, "Saved auto-source filter fetched successfully");
       } else {
         log(
           "WARN",
           "Skipping Stage 5 GET saved auto-source filter (SANITY_SKIP_SAVED_AUTO_SOURCE_FILTER)"
         );
+        tracker.markByStage(
+          "GETSOURCEFILTER",
+          false,
+          "Skipped due to SANITY_SKIP_SAVED_AUTO_SOURCE_FILTER"
+        );
       }
-      await triggerSourcing(http, log, session, jobIdForDetailsOnly, config);
+      // Trigger sourcing with the persisted filter payload so UI history shows complete criteria.
+      await triggerSourcing(
+        http,
+        log,
+        session,
+        jobIdForDetailsOnly,
+        config,
+        savedFilterForRun?.filter || stage4.filter
+      );
       const stage7 = await getMatchProfiles(http, log, session, jobIdForDetailsOnly, config);
       if (config.outreachEnabled) {
         if (!config.outreachAllowRealSend) {
@@ -223,17 +344,23 @@ async function main() {
     }
 
     const created = await createJob(http, log, session, config);
+    tracker.markByStage("CREATEJOB", true, "Job create stage completed successfully");
     const { job } = await getJobDetails(http, log, session, created.jobId, config);
     const validationErrors = validateJobDetails(job, created.jobId);
     if (validationErrors.length) {
+      tracker.markByStage("GETJOB", false, validationErrors.join("; "));
+      tracker.markByStage("GENAUTOSOURCE", false, "Blocked because job validation failed");
+      tracker.markByStage("GETSOURCEFILTER", false, "Blocked because job validation failed");
       log("ERROR", `Job validation failed | ${validationErrors.join("; ")}`);
       console.log("\nRESULT: FAILED\n");
       process.exitCode = 1;
       return;
     }
     log("SUCCESS", "Job validation successful");
+    tracker.markByStage("GETJOB", true, "Job details and validation succeeded");
     const stage4 = await getAutoSourceFilter(http, log, session, created.jobId, config);
     await saveAutoSourceFilter(http, log, session, created.jobId, stage4.filter, config);
+    tracker.markByStage("GENAUTOSOURCE", true, "Generated and saved auto-source filter");
     let savedFilterForRun = null;
     if (!config.skipSavedAutoSourceFilter) {
       if (config.savedAutoSourceFilterPostGenerateDelayMs > 0) {
@@ -244,13 +371,20 @@ async function main() {
         await sleep(config.savedAutoSourceFilterPostGenerateDelayMs);
       }
       savedFilterForRun = await getSavedAutoSourceFilter(http, log, session, created.jobId, config);
+      tracker.markByStage("GETSOURCEFILTER", true, "Saved auto-source filter fetched successfully");
     } else {
       log(
         "WARN",
         "Skipping Stage 5 GET saved auto-source filter (SANITY_SKIP_SAVED_AUTO_SOURCE_FILTER)"
       );
+      tracker.markByStage(
+        "GETSOURCEFILTER",
+        false,
+        "Skipped due to SANITY_SKIP_SAVED_AUTO_SOURCE_FILTER"
+      );
     }
-    await triggerSourcing(http, log, session, created.jobId, config);
+    // Trigger sourcing with the persisted filter payload so UI history shows complete criteria.
+    await triggerSourcing(http, log, session, created.jobId, config, savedFilterForRun?.filter || stage4.filter);
     const stage7 = await getMatchProfiles(http, log, session, created.jobId, config);
     if (config.outreachEnabled) {
       if (!config.outreachAllowRealSend) {
@@ -270,8 +404,14 @@ async function main() {
     console.log("\nRESULT: SUCCESS\n");
     log("INFO", "Sanity flow completed successfully");
   } catch {
+    tracker.markByStage("CREATEJOB", false, "Stage did not complete due to run failure");
+    tracker.markByStage("GETJOB", false, "Stage did not complete due to run failure");
+    tracker.markByStage("GENAUTOSOURCE", false, "Stage did not complete due to run failure");
+    tracker.markByStage("GETSOURCEFILTER", false, "Stage did not complete due to run failure");
     console.log("\nRESULT: FAILED\n");
     process.exitCode = 1;
+  } finally {
+    tracker.summarize();
   }
 }
 
