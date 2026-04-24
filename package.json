@@ -10,7 +10,9 @@
     "job:details": "node sanity-job-flow.js --job-details",
     "sanity:print-payload": "node sanity-job-flow.js --print-payload",
     "sanity:stage2": "node sanity-job-next-stage.js",
-    "outreach:test": "node outreach-test-flow.js"
+    "outreach:test": "node outreach-test-flow.js",
+    "outreach:template": "node outreach-sequence-template-flow.js",
+    "sequence:reply-diag": "node sequence-reply-diagnostics.js"
   },
   "keywords": [
     "api",

@@ -30,6 +30,37 @@ function noRetryError(message) {
   return e;
 }
 
+function getMatchProfilesAudience(cfg) {
+  // Audience controls query shape:
+  // - prospects: thumbsUp + source
+  // - candidates: filter=Active (or configured filter)
+  const raw = String(cfg?.matchProfilesAudience || "prospects").trim().toLowerCase();
+  return raw === "candidates" ? "candidates" : "prospects";
+}
+
+function buildMatchProfilesQueryParams(cfg) {
+  const audience = getMatchProfilesAudience(cfg);
+  const base = {
+    limit: cfg.matchProfilesLimit,
+    page: cfg.matchProfilesPage,
+  };
+
+  if (audience === "candidates") {
+    // Candidate list view endpoint contract.
+    return {
+      ...base,
+      filter: cfg.matchProfilesFilter || "Active",
+    };
+  }
+
+  // Prospect list endpoint contract (legacy/default behavior).
+  return {
+    ...base,
+    thumbsUp: cfg.matchProfilesThumbsUp,
+    source: cfg.matchProfilesSource,
+  };
+}
+
 function pickFirstEmail(applicant) {
   const work = Array.isArray(applicant?.work_email) ? applicant.work_email : [];
   const personal = Array.isArray(applicant?.email) ? applicant.email : [];
@@ -72,12 +103,8 @@ function extractTotalDocs(payload, docs) {
  */
 async function getMatchProfiles(http, log, session, jobId, cfg) {
   const method = String(cfg.matchProfilesMethod || "POST").toUpperCase();
-  const qs = buildQueryString({
-    thumbsUp: cfg.matchProfilesThumbsUp,
-    source: cfg.matchProfilesSource,
-    limit: cfg.matchProfilesLimit,
-    page: cfg.matchProfilesPage,
-  });
+  const audience = getMatchProfilesAudience(cfg);
+  const qs = buildQueryString(buildMatchProfilesQueryParams(cfg));
   const url = `${buildMatchProfilesUrl(cfg.baseUrl, jobId, cfg.matchProfilesPath)}${qs}`;
   const maxAttempts = Math.max(1, Number(cfg.matchProfilesMaxAttempts || 3));
   const baseDelayMs = Math.max(100, Number(cfg.matchProfilesBackoffMs || 1000));
@@ -89,7 +116,7 @@ async function getMatchProfiles(http, log, session, jobId, cfg) {
   let lastErr = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    log("INFO", `Match profiles | GET ${url} | attempt ${attempt}/${maxAttempts}`);
+    log("INFO", `Match profiles (${audience}) | ${method} ${url} | attempt ${attempt}/${maxAttempts}`);
 
     try {
       const response =
@@ -229,4 +256,5 @@ async function getMatchProfiles(http, log, session, jobId, cfg) {
 module.exports = {
   getMatchProfiles,
   buildMatchProfilesUrl,
+  buildMatchProfilesQueryParams,
 };

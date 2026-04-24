@@ -1,6 +1,4 @@
-/**
- * Stage 1: authenticate and return session (Bearer token, uid, org_id).
- */
+
 
 const {
   buildLoginUrl,

@@ -38,6 +38,30 @@ function normalizeSkillsForSourcing(skills) {
     .filter(Boolean);
 }
 
+function normalizeSkillLabels(skills) {
+  if (!Array.isArray(skills)) return [];
+  // UI compatibility: many screens read plain skill labels from normalized_skills.
+  return skills
+    .map((s) => {
+      if (s && typeof s === "object" && String(s.skill || "").trim()) return String(s.skill).trim();
+      const label = String(s || "").trim();
+      return label || null;
+    })
+    .filter(Boolean);
+}
+
+function cleanStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  // Remove empty items so UI chips don't render blank placeholders.
+  return value.map((v) => String(v || "").trim()).filter(Boolean);
+}
+
+function cleanIndustryPrerequisites(value) {
+  if (!Array.isArray(value)) return [];
+  // Drop empty objects like [{}] because some UI mappers treat this as invalid data.
+  return value.filter((item) => item && typeof item === "object" && Object.keys(item).length > 0);
+}
+
 async function saveAutoSourceFilter(http, log, session, jobId, generatedFilter, cfg) {
   const url = buildSaveAutoSourceFilterUrl(cfg.baseUrl, cfg.saveAutoSourceFilterPath);
   const headers = {
@@ -48,11 +72,24 @@ async function saveAutoSourceFilter(http, log, session, jobId, generatedFilter, 
   };
 
   const normalizedSkills = normalizeSkillsForSourcing(generatedFilter?.skills);
+  const normalizedSkillLabels = normalizeSkillLabels(generatedFilter?.skills);
   // Persist generated filter with sourcing-friendly defaults, forcing the current job_id for safety.
   const payload = {
     ...(generatedFilter && typeof generatedFilter === "object" ? generatedFilter : {}),
     job_id: String(jobId),
+    // Keep API-facing object shape.
     skills: normalizedSkills,
+    // Keep UI-facing string shape as compatibility fallback.
+    normalized_skills:
+      Array.isArray(generatedFilter?.normalized_skills) && generatedFilter.normalized_skills.length
+        ? cleanStringArray(generatedFilter.normalized_skills)
+        : normalizedSkillLabels,
+    // Ensure list fields are always clean arrays for UI chips/selectors.
+    similar_titles: cleanStringArray(generatedFilter?.similar_titles),
+    similar_companies: cleanStringArray(generatedFilter?.similar_companies),
+    location: cleanStringArray(generatedFilter?.location),
+    company_match_attributes: cleanStringArray(generatedFilter?.company_match_attributes),
+    industry_prerequisites: cleanIndustryPrerequisites(generatedFilter?.industry_prerequisites),
     title_search_depth:
       generatedFilter?.title_search_depth && String(generatedFilter.title_search_depth).trim()
         ? generatedFilter.title_search_depth

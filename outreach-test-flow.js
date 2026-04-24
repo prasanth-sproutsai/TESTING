@@ -61,9 +61,12 @@ function buildConfig() {
     jobDetailsPath: (process.env.JOB_DETAILS_PATH || "/job/job_details").replace(/\/+$/, ""),
     jobDetailsQuery: (process.env.JOB_DETAILS_QUERY || "status=active").trim(),
     matchProfilesPath: (process.env.MATCH_PROFILES_PATH || "/job/get_match_profiles").replace(/\/+$/, ""),
+    // Supported values: prospects | candidates
+    matchProfilesAudience: (process.env.MATCH_PROFILES_AUDIENCE || "prospects").trim().toLowerCase(),
     matchProfilesMethod: (process.env.MATCH_PROFILES_METHOD || "POST").trim().toUpperCase(),
     matchProfilesSource: (process.env.MATCH_PROFILES_SOURCE || "Prospect").trim(),
     matchProfilesThumbsUp: (process.env.MATCH_PROFILES_THUMBS_UP || "0").trim(),
+    matchProfilesFilter: (process.env.MATCH_PROFILES_FILTER || "Active").trim(),
     matchProfilesLimit: Math.max(1, parseInt(process.env.MATCH_PROFILES_LIMIT || "20", 10) || 20),
     matchProfilesPage: Math.max(1, parseInt(process.env.MATCH_PROFILES_PAGE || "1", 10) || 1),
     matchProfilesMaxAttempts: Math.max(1, parseInt(process.env.MATCH_PROFILES_MAX_ATTEMPTS || "3", 10) || 3),
